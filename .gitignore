@@ -5,3 +5,5 @@ db.gz
 *.zip
 *.sqlite
 /vendor/*/
+.vscode/
+

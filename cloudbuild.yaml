@@ -1,0 +1,69 @@
+steps:
+  # This step copies encrypted config from a bucket into the workspace
+  - name: "gcr.io/cloud-builders/gsutil"
+    id: "config"
+    args:
+      - cp
+      - gs://billhop-cloudbuild/npmrc.enc
+      - .
+
+  # This step decrypts encrypted file npmrc.enc from source repo
+  - name: "gcr.io/cloud-builders/gcloud"
+    args:
+      - kms
+      - decrypt
+      - --ciphertext-file=npmrc.enc
+      - --plaintext-file=.npmrc
+      - --location=global
+      - --keyring=cloud-build-keyring
+      - --key=npm-key
+
+  - name: "gcr.io/cloud-builders/docker"
+    id: "image"
+    args:
+      - build
+      - -t
+      - "eu.gcr.io/$PROJECT_ID/freegeoip:latest"
+      - -t
+      - "eu.gcr.io/$PROJECT_ID/freegeoip:$SHORT_SHA"
+      - -t
+      - "eu.gcr.io/$PROJECT_ID/freegeoip:$COMMIT_SHA"
+      - .
+
+  # No conditional in CloudBuild. To avoid multiple files and trigegrs, use
+  # if statement in bash and push manually
+  - name: "gcr.io/cloud-builders/docker"
+    entrypoint: sh
+    args:
+      - -c
+      - |
+        if [ "$BRANCH_NAME" = "master" ]
+        then
+          docker push eu.gcr.io/$PROJECT_ID/freegeoip:latest
+          docker push eu.gcr.io/$PROJECT_ID/freegeoip:$SHORT_SHA
+          docker push eu.gcr.io/$PROJECT_ID/freegeoip:$COMMIT_SHA
+        else
+          echo "Not pushing images for branch $BRANCH_NAME"
+        fi
+        echo done
+
+  # Deploy using billhop own kunectl clone with yq tool installed
+  # https://github.com/Billhop/kubetools
+  - name: "eu.gcr.io/billhop-se/kubetools"
+    env:
+      - "CLOUDSDK_COMPUTE_REGION=europe-west1"
+      - "CLOUDSDK_CONTAINER_CLUSTER=billhop"
+      - "NAMESPACE=staging"
+      - "APP_VERSION=$SHORT_SHA"
+    args:
+      - -c
+      - |
+        if [ "$BRANCH_NAME" = "master" ]
+        then
+          gcloud config set project billhop-se
+          gcloud container clusters get-credentials --region "$$CLOUDSDK_COMPUTE_REGION" "$$CLOUDSDK_CONTAINER_CLUSTER"
+          cd k8s
+          bin/deploy.sh $$APP_VERSION $$NAMESPACE
+        else
+          echo "No deploying to Kubernetes for branch $BRANCH_NAME"
+        fi
